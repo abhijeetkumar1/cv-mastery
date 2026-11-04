@@ -1,0 +1,21 @@
+[project]
+name = "cv-mastery"
+version = "0.1.0"
+description = "Hands-on computer vision learning path"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "opencv-contrib-python",
+    "pillow",
+    "scikit-image",
+    "torch",
+    "torchvision",
+    "tqdm",
+    "jupyterlab",
+    "ipykernel",
+    "ipywidgets",
+]
+
+[tool.uv]
+package = false
