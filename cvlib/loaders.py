@@ -108,3 +108,50 @@ def random_crop_flip(x: torch.Tensor, pad: int = 4) -> torch.Tensor:
     flip = torch.rand(B, device=x.device) < 0.5
     out[flip] = out[flip].flip(3)
     return out.contiguous()
+
+
+class SegGPULoader:
+    """Like GPULoader, for segmentation: yields (normalized images (B, 3, H, W), masks (B, H, W) int64).
+
+    Training augmentation is applied to image and mask *together*: random crop after padding (image padded by
+    reflection, mask padded with ignore_index) and horizontal flip. No interpolation touches the mask.
+    """
+
+    def __init__(self, x, m, batch_size=32, shuffle=False, augment=False, pad=16, mean=None, std=None,
+                 device="cpu", ignore_index=255, seed=0):
+        self.x = torch.as_tensor(np.asarray(x)).permute(0, 3, 1, 2).contiguous().to(device)
+        self.m = torch.as_tensor(np.asarray(m)).to(device)
+        self.mean = torch.tensor(mean or [0.0] * 3, device=device).view(1, 3, 1, 1)
+        self.std = torch.tensor(std or [1.0] * 3, device=device).view(1, 3, 1, 1)
+        self.batch_size, self.shuffle, self.augment, self.pad = batch_size, shuffle, augment, pad
+        self.device, self.ignore = device, ignore_index
+        self.gen = torch.Generator().manual_seed(seed)
+
+    def __len__(self):
+        return math.ceil(len(self.x) / self.batch_size)
+
+    def _augment(self, x, m):
+        B, C, H, W = x.shape
+        p = self.pad
+        xp = F.pad(x, (p, p, p, p), mode="reflect")
+        mp = F.pad(m[:, None].float(), (p, p, p, p), value=float(self.ignore))[:, 0].long()
+        dy = torch.randint(0, 2 * p + 1, (B,), device=x.device)
+        dx = torch.randint(0, 2 * p + 1, (B,), device=x.device)
+        rows = (dy[:, None] + torch.arange(H, device=x.device))[:, :, None]
+        cols = (dx[:, None] + torch.arange(W, device=x.device))[:, None, :]
+        bidx = torch.arange(B, device=x.device)[:, None, None]
+        x = xp.permute(0, 2, 3, 1)[bidx, rows, cols].permute(0, 3, 1, 2)
+        m = mp[bidx, rows, cols]
+        flip = torch.rand(B, device=x.device) < 0.5
+        x[flip], m[flip] = x[flip].flip(3), m[flip].flip(2)
+        return x.contiguous(), m.contiguous()
+
+    def __iter__(self):
+        n = len(self.x)
+        order = (torch.randperm(n, generator=self.gen) if self.shuffle else torch.arange(n)).to(self.device)
+        for s in range(0, n, self.batch_size):
+            idx = order[s:s + self.batch_size]
+            xb, mb = self.x[idx].float().div_(255), self.m[idx].long()
+            if self.augment:
+                xb, mb = self._augment(xb, mb)
+            yield (xb - self.mean) / self.std, mb

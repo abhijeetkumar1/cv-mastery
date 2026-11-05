@@ -142,3 +142,97 @@ def voc2007_multilabel(image_set: str = "trainval") -> tuple[list[Path], np.ndar
             labels[i, VOC_CLASSES.index(obj.findtext("name"))] = 1
         paths.append(base / "JPEGImages" / f"{img_id}.jpg")
     return paths, labels
+
+
+# ── Detection & segmentation datasets (module 06–07) ─────────────────────────
+# VOC names → COCO names (COCO-pretrained detectors know all 20 VOC classes under these names)
+VOC_TO_COCO = {"aeroplane": "airplane", "bicycle": "bicycle", "bird": "bird", "boat": "boat", "bottle": "bottle",
+               "bus": "bus", "car": "car", "cat": "cat", "chair": "chair", "cow": "cow", "diningtable": "dining table",
+               "dog": "dog", "horse": "horse", "motorbike": "motorcycle", "person": "person", "pottedplant": "potted plant",
+               "sheep": "sheep", "sofa": "couch", "train": "train", "tvmonitor": "tv"}
+
+
+def voc2007_detection(image_set: str = "val") -> list[dict]:
+    """VOC 2007 boxes: one dict per image with path, boxes (N, 4) xyxy, labels (N,) VOC class ids, difficult (N,) bool."""
+    import xml.etree.ElementTree as ET
+
+    voc2007_multilabel("trainval")  # makes sure the dataset is downloaded
+    base = _data_dir() / "voc" / "VOCdevkit" / "VOC2007"
+    out = []
+    for img_id in (base / "ImageSets" / "Main" / f"{image_set}.txt").read_text().split():
+        root = ET.parse(base / "Annotations" / f"{img_id}.xml").getroot()
+        boxes, labels, diff = [], [], []
+        for obj in root.findall("object"):
+            bb = obj.find("bndbox")
+            boxes.append([float(bb.findtext(k)) - (1 if k in ("xmin", "ymin") else 0) for k in ("xmin", "ymin", "xmax", "ymax")])
+            labels.append(VOC_CLASSES.index(obj.findtext("name")))
+            diff.append(obj.findtext("difficult", "0") == "1")
+        size = root.find("size")
+        out.append(dict(id=img_id, path=base / "JPEGImages" / f"{img_id}.jpg", width=int(size.findtext("width")),
+                        height=int(size.findtext("height")), boxes=np.array(boxes, np.float32).reshape(-1, 4),
+                        labels=np.array(labels, np.int64), difficult=np.array(diff, bool)))
+    return out
+
+
+def voc2007_segmentation(image_set: str = "val") -> list[dict]:
+    """VOC 2007 segmentation subset (422 images): image path + class mask path (PNG: 0 = background, 1–20 = VOC classes, 255 = boundary/ignore)."""
+    voc2007_multilabel("trainval")
+    base = _data_dir() / "voc" / "VOCdevkit" / "VOC2007"
+    ids = (base / "ImageSets" / "Segmentation" / f"{image_set}.txt").read_text().split()
+    return [dict(id=i, path=base / "JPEGImages" / f"{i}.jpg", mask=base / "SegmentationClass" / f"{i}.png",
+                 instances=base / "SegmentationObject" / f"{i}.png") for i in ids]
+
+
+def pennfudan() -> list[dict]:
+    """Penn-Fudan pedestrians (170 images): image path, instance mask path (0 = background, 1..N = person id), boxes (N, 4) xyxy."""
+    import zipfile
+
+    from PIL import Image
+
+    root = _data_dir() / "pennfudan" / "PennFudanPed"
+    if not root.exists():
+        z = download("https://www.cis.upenn.edu/~jshi/ped_html/PennFudanPed.zip", subdir="pennfudan")
+        zipfile.ZipFile(z).extractall(z.parent)
+    out = []
+    for img in sorted((root / "PNGImages").glob("*.png")):
+        mpath = root / "PedMasks" / f"{img.stem}_mask.png"
+        m = np.array(Image.open(mpath))
+        ids = [i for i in np.unique(m) if i != 0]
+        boxes = []
+        for i in ids:
+            ys, xs = np.nonzero(m == i)
+            boxes.append([xs.min(), ys.min(), xs.max() + 1, ys.max() + 1])
+        out.append(dict(id=img.stem, path=img, mask=mpath, boxes=np.array(boxes, np.float32).reshape(-1, 4), instance_ids=np.array(ids)))
+    return out
+
+
+def cache_pairs(name: str, items, size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Cache (image, mask) pairs: images bicubic-resized, masks NEAREST-resized (labels must stay whole numbers),
+    both with the same short-side resize + center crop. items: sequence of (PIL image, PIL mask) or dicts with
+    "path" and "mask" keys. Returns uint8 arrays (N, size, size, 3) and (N, size, size), memory-mapped."""
+    from PIL import Image
+
+    d = _data_dir() / "cache"
+    d.mkdir(parents=True, exist_ok=True)
+    x_path, m_path = d / f"{name}_{size}_x.npy", d / f"{name}_{size}_m.npy"
+    if x_path.exists() and m_path.exists():
+        return np.load(x_path, mmap_mode="r"), np.load(m_path, mmap_mode="r")
+    n = len(items)
+    X = np.lib.format.open_memmap(x_path.with_suffix(".tmp.npy"), mode="w+", dtype=np.uint8, shape=(n, size, size, 3))
+    M = np.lib.format.open_memmap(m_path.with_suffix(".tmp.npy"), mode="w+", dtype=np.uint8, shape=(n, size, size))
+    for i in range(n):
+        it = items[i]
+        img, mask = (Image.open(it["path"]), Image.open(it["mask"])) if isinstance(it, dict) else it
+        img = img.convert("RGB")
+        w, h = img.size
+        s = size / min(w, h)
+        new = (max(size, round(w * s)), max(size, round(h * s)))
+        img, mask = img.resize(new, Image.BICUBIC), mask.resize(new, Image.NEAREST)
+        left, top = (new[0] - size) // 2, (new[1] - size) // 2
+        box = (left, top, left + size, top + size)
+        X[i], M[i] = np.asarray(img.crop(box)), np.asarray(mask.crop(box))
+    X.flush(); M.flush()
+    del X, M
+    x_path.with_suffix(".tmp.npy").rename(x_path)
+    m_path.with_suffix(".tmp.npy").rename(m_path)
+    return np.load(x_path, mmap_mode="r"), np.load(m_path, mmap_mode="r")

@@ -42,3 +42,14 @@ def opencv_sample(name: str) -> Path:
 def stitching_sample(name: str) -> Path:
     """An image from OpenCV's panorama test set, e.g. stitching_sample("budapest1.jpg")."""
     return download(OPENCV_STITCHING + name, subdir="opencv_stitching")
+
+
+def model_path(name: str) -> Path:
+    """Path to a model file in data/models/, downloading Ultralytics weights (e.g. "yolo11n.pt", "sam2.1_t.pt") on first use."""
+    path = _data_dir() / "models" / name
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from ultralytics.utils.downloads import attempt_download_asset
+
+        attempt_download_asset(str(path))
+    return path

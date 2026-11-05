@@ -72,3 +72,45 @@ def best_thresholds(probs, targets, grid=np.linspace(0.05, 0.95, 19)) -> np.ndar
             f1s.append(2 * tp / max(2 * tp + fp + fn, 1))
         out[c] = grid[int(np.argmax(f1s))]
     return out
+
+
+def seg_confusion(pred, target, n_classes: int, ignore_index: int = 255) -> np.ndarray:
+    """Pixel confusion matrix (rows = true class, cols = predicted), skipping ignored pixels. Accumulate over a dataset."""
+    pred, target = np.asarray(pred).ravel(), np.asarray(target).ravel()
+    valid = target != ignore_index
+    return np.bincount(n_classes * target[valid].astype(np.int64) + pred[valid], minlength=n_classes ** 2).reshape(n_classes, n_classes)
+
+
+def seg_scores(cm: np.ndarray) -> dict:
+    """Segmentation metrics from a pixel confusion matrix: per-class IoU and Dice, mIoU, mean Dice, pixel accuracy.
+    Classes that never appear (no true and no predicted pixels) are excluded from the means."""
+    tp = np.diag(cm).astype(float)
+    fp, fn = cm.sum(0) - tp, cm.sum(1) - tp
+    denom = tp + fp + fn
+    iou = np.where(denom > 0, tp / np.maximum(denom, 1), np.nan)
+    dice = np.where(denom > 0, 2 * tp / np.maximum(2 * tp + fp + fn, 1), np.nan)
+    return dict(iou=iou, dice=dice, mIoU=float(np.nanmean(iou)), mDice=float(np.nanmean(dice)), pixel_acc=float(tp.sum() / max(cm.sum(), 1)))
+
+
+def panoptic_quality(gt_masks, pred_masks, iou_threshold: float = 0.5) -> dict:
+    """Panoptic Quality for one class, over a dataset (lists of per-image (N, H, W) bool mask arrays).
+
+    A predicted segment matches a ground-truth segment if IoU > 0.5 (such matches are unique by construction,
+    since non-overlapping segments can't both exceed 0.5 with the same one).
+    PQ = Σ IoU(TP) / (|TP| + ½|FP| + ½|FN|) = SQ (mean IoU of matches) × RQ (an F1 score on segments)."""
+    tp_iou, tp, fp, fn = 0.0, 0, 0, 0
+    for g, p in zip(gt_masks, pred_masks):
+        g = np.asarray(g, dtype=bool).reshape(-1, *np.asarray(g).shape[-2:]) if len(g) else np.zeros((0, 1, 1), bool)
+        p = np.asarray(p, dtype=bool).reshape(-1, *np.asarray(p).shape[-2:]) if len(p) else np.zeros((0, 1, 1), bool)
+        if len(g) and len(p):
+            gf, pf = g.reshape(len(g), -1).astype(np.float32), p.reshape(len(p), -1).astype(np.float32)
+            inter = pf @ gf.T
+            iou = inter / np.maximum(pf.sum(1)[:, None] + gf.sum(1)[None, :] - inter, 1)
+            matched = iou > iou_threshold
+            tp_iou += float(iou[matched].sum()); n = int(matched.sum())
+        else:
+            n = 0
+        tp += n; fp += len(p) - n; fn += len(g) - n
+    sq = tp_iou / max(tp, 1)
+    rq = tp / max(tp + 0.5 * fp + 0.5 * fn, 1e-9)
+    return dict(PQ=sq * rq, SQ=sq, RQ=rq, TP=tp, FP=fp, FN=fn)
