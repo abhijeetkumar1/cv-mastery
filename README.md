@@ -44,8 +44,10 @@ Tick each box when you've worked through the notebook (and done its experiments)
 - [ ] 05c · Multi-label classification: `05_transfer_learning/05c_multilabel.ipynb` (fine-tuning part: Kaggle)
 
 ### Phase 3 · Detection & segmentation
-- [ ] 06 · Object detection
-- [ ] 07 · Segmentation
+- [ ] 06a · Detection fundamentals: `06_detection/06a_detection_fundamentals.ipynb`
+- [ ] 06b · Training detectors: `06_detection/06b_training_detectors.ipynb` (**run on Kaggle**; smoke-tests locally) (+ `webcam_detect.py`)
+- [ ] 07a · Semantic segmentation: `07_segmentation/07a_semantic_segmentation.ipynb`
+- [ ] 07b · Instance segmentation & SAM: `07_segmentation/07b_instance_segmentation_and_sam.ipynb` (fine-tuning part: Kaggle)
 
 ### Phase 4 · Transformers & embeddings
 - [ ] 08 · Attention & Vision Transformers

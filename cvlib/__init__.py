@@ -11,4 +11,5 @@ Modules are added as the course progresses:
     lora     - LoRA adapters for Linear/Conv2d               (05a)
     metrics  - precision/recall/F1, AP, multi-label metrics  (05b, 05c)
     tracking - a minimal experiment log                      (05b)
+    detection - boxes, IoU, NMS, COCO-style mAP, mask AP      (06, 07)
 """
