@@ -37,9 +37,11 @@ Tick each box when you've worked through the notebook (and done its experiments)
 - [ ] 02b · PyTorch basics & the training loop: `02_nn_basics/02b_pytorch_basics.ipynb`
 
 ### Phase 2 · CNNs
-- [ ] 03 · CNNs in depth
-- [ ] 04 · CNN architectures
-- [ ] 05 · Transfer learning & training craft
+- [ ] 03 · CNNs in depth: `03_cnn_depth/03_cnns_in_depth.ipynb`
+- [ ] 04 · CNN architectures: `04_cnn_architectures/04_cnn_architectures.ipynb` (benchmark: also run on Kaggle for GPU numbers)
+- [ ] 05a · Transfer learning: `05_transfer_learning/05a_transfer_learning.ipynb` (**run on Kaggle**; smoke-tests locally)
+- [ ] 05b · Training craft: `05_transfer_learning/05b_training_craft.ipynb`
+- [ ] 05c · Multi-label classification: `05_transfer_learning/05c_multilabel.ipynb` (fine-tuning part: Kaggle)
 
 ### Phase 3 · Detection & segmentation
 - [ ] 06 · Object detection

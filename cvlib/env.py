@@ -11,6 +11,11 @@ from pathlib import Path
 
 import numpy as np
 
+# Hugging Face's "Xet" download transport can fail on some networks (unreachable cas-server.xethub.hf.co).
+# Plain HTTP downloads work everywhere. This must be set before huggingface_hub / timm / transformers are imported,
+# which is why it lives here (the standard first cell imports cvlib.env first). Set HF_HUB_DISABLE_XET=0 to opt back in.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 ROOT = Path(__file__).resolve().parent.parent
 
 

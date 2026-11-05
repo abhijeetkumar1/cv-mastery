@@ -2,11 +2,14 @@
 
     history = fit(model, train_loader, val_loader, loss_fn, optimizer, epochs=10, device=env.device)
 
-It grows over the course (mixed precision in 05, schedulers and checkpoints, etc.).
+Grows with the course:
+    02b  basic loop, early stopping
+    05   mixed precision (amp=True), per-batch LR schedules (OneCycle, warmup), multi-label accuracy
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import time
 
@@ -14,50 +17,77 @@ import torch
 from torch import nn
 
 
-def _accuracy_count(logits: torch.Tensor, y: torch.Tensor) -> int:
-    """Number of correct predictions for single-label classification (logits: (B, C), y: (B,))."""
-    return int((logits.argmax(dim=1) == y).sum().item())
+def _correct_count(logits: torch.Tensor, y: torch.Tensor) -> float:
+    """Single-label (y: (B,) class ids): number of correct argmax predictions.
+    Multi-label (y: (B, C) of 0/1): number of correct label decisions at probability 0.5, divided by C."""
+    if y.ndim == 1:
+        return float((logits.argmax(dim=1) == y).sum().item())
+    return float(((logits > 0) == (y > 0.5)).float().mean(dim=1).sum().item())
 
 
-def train_one_epoch(model: nn.Module, loader, loss_fn, optimizer, device: str) -> tuple[float, float]:
-    """One pass over the training data. Returns (mean loss, accuracy)."""
+def autocast(device: str, enabled: bool):
+    """Mixed precision context: float16 on GPUs (cuda/mps), bfloat16 on CPU. No-op when disabled."""
+    if not enabled:
+        return contextlib.nullcontext()
+    dtype = torch.bfloat16 if device == "cpu" else torch.float16
+    return torch.autocast(device_type=device, dtype=dtype)
+
+
+def train_one_epoch(model: nn.Module, loader, loss_fn, optimizer, device: str,
+                    amp: bool = False, scaler=None, batch_scheduler=None) -> tuple[float, float]:
+    """One pass over the training data. Returns (mean loss, accuracy).
+
+    amp: run the forward pass in float16 (see module 05b). On CUDA pass a torch.amp.GradScaler as `scaler`.
+    batch_scheduler: an LR scheduler stepped after every batch (OneCycle, warmup); epoch schedulers go to fit().
+    """
     model.train()  # turns on dropout, batchnorm updates, ...
-    total_loss, correct, n = 0.0, 0, 0
+    total_loss, correct, n = 0.0, 0.0, 0
     for x, y in loader:
         x, y = x.to(device), y.to(device)
-        logits = model(x)  # 1. forward
-        loss = loss_fn(logits, y)  # 2. how wrong are we?
-        optimizer.zero_grad()  # 3. clear old gradients (PyTorch accumulates them)
-        loss.backward()  # 4. backprop: compute d(loss)/d(every weight)
-        optimizer.step()  # 5. nudge every weight downhill
+        with autocast(device, amp):
+            logits = model(x)  # 1. forward
+            loss = loss_fn(logits, y)  # 2. how wrong are we?
+        optimizer.zero_grad(set_to_none=True)  # 3. clear old gradients (PyTorch accumulates them)
+        if scaler is not None:  # float16 gradients can underflow: scale the loss up, then back down
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()  # 4. backprop: compute d(loss)/d(every weight)
+            optimizer.step()  # 5. nudge every weight downhill
+        if batch_scheduler is not None:
+            batch_scheduler.step()
         total_loss += loss.item() * len(y)
-        correct += _accuracy_count(logits, y)
+        correct += _correct_count(logits.float(), y)
         n += len(y)
     return total_loss / n, correct / n
 
 
 @torch.no_grad()  # no gradients needed: faster, less memory
-def evaluate(model: nn.Module, loader, loss_fn, device: str) -> tuple[float, float]:
+def evaluate(model: nn.Module, loader, loss_fn, device: str, amp: bool = False) -> tuple[float, float]:
     """Loss and accuracy on a dataset, without training. Returns (mean loss, accuracy)."""
     model.eval()  # turns off dropout, uses running batchnorm stats
-    total_loss, correct, n = 0.0, 0, 0
+    total_loss, correct, n = 0.0, 0.0, 0
     for x, y in loader:
         x, y = x.to(device), y.to(device)
-        logits = model(x)
+        with autocast(device, amp):
+            logits = model(x)
+        logits = logits.float()
         total_loss += loss_fn(logits, y).item() * len(y)
-        correct += _accuracy_count(logits, y)
+        correct += _correct_count(logits, y)
         n += len(y)
     return total_loss / n, correct / n
 
 
 @torch.no_grad()
-def predict(model: nn.Module, loader, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+def predict(model: nn.Module, loader, device: str, amp: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
     """All logits and labels for a dataset, on the CPU. Useful for confusion matrices and error galleries."""
     model.eval()
     all_logits, all_y = [], []
     for x, y in loader:
-        all_logits.append(model(x.to(device)).cpu())
-        all_y.append(y)
+        with autocast(device, amp):
+            all_logits.append(model(x.to(device)).float().cpu())
+        all_y.append(y.cpu() if torch.is_tensor(y) else torch.as_tensor(y))
     return torch.cat(all_logits), torch.cat(all_y)
 
 
@@ -70,31 +100,38 @@ def fit(
     epochs: int,
     device: str,
     scheduler=None,
+    batch_scheduler=None,
+    amp: bool = False,
     patience: int | None = None,
     verbose: bool = True,
 ) -> dict:
     """Train for `epochs`, validating after each one.
 
-    patience: stop early if validation loss hasn't improved for this many epochs,
-              and restore the best weights (early stopping).
-    Returns a history dict: train_loss, val_loss, train_acc, val_acc (one value per epoch).
+    scheduler:       LR scheduler stepped once per epoch (e.g. CosineAnnealingLR(T_max=epochs)).
+    batch_scheduler: LR scheduler stepped once per batch (e.g. OneCycleLR, warmup).
+    amp:             mixed precision (float16 autocast; a GradScaler is created automatically on CUDA).
+    patience:        stop early if validation loss hasn't improved for this many epochs,
+                     and restore the best weights (early stopping).
+    Returns a history dict: train_loss, val_loss, train_acc, val_acc, lr (one value per epoch).
     """
     model.to(device)
-    history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
+    scaler = torch.amp.GradScaler("cuda") if (amp and device == "cuda") else None
+    history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": []}
     best_loss, best_state, bad_epochs = float("inf"), None, 0
 
     for epoch in range(1, epochs + 1):
         t0 = time.perf_counter()
-        tr_loss, tr_acc = train_one_epoch(model, train_loader, loss_fn, optimizer, device)
-        va_loss, va_acc = evaluate(model, val_loader, loss_fn, device)
+        lr_now = optimizer.param_groups[0]["lr"]
+        tr_loss, tr_acc = train_one_epoch(model, train_loader, loss_fn, optimizer, device, amp, scaler, batch_scheduler)
+        va_loss, va_acc = evaluate(model, val_loader, loss_fn, device, amp)
         if scheduler is not None:
             scheduler.step()
-        for k, v in zip(history, (tr_loss, va_loss, tr_acc, va_acc)):
+        for k, v in zip(history, (tr_loss, va_loss, tr_acc, va_acc, lr_now)):
             history[k].append(v)
         if verbose:
             print(
                 f"epoch {epoch:3d} | train loss {tr_loss:.4f} acc {tr_acc:.4f} | "
-                f"val loss {va_loss:.4f} acc {va_acc:.4f} | {time.perf_counter() - t0:.1f}s"
+                f"val loss {va_loss:.4f} acc {va_acc:.4f} | lr {lr_now:.2e} | {time.perf_counter() - t0:.1f}s"
             )
 
         if va_loss < best_loss:
