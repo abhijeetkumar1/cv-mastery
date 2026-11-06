@@ -50,7 +50,8 @@ Tick each box when you've worked through the notebook (and done its experiments)
 - [ ] 07b · Instance segmentation & SAM: `07_segmentation/07b_instance_segmentation_and_sam.ipynb` (fine-tuning part: Kaggle)
 
 ### Phase 4 · Transformers & embeddings
-- [ ] 08 · Attention & Vision Transformers
+- [ ] 08a · Attention from scratch: `08_attention_vit/08a_attention.ipynb`
+- [ ] 08b · Vision Transformers: `08_attention_vit/08b_vision_transformers.ipynb` (fine-tuning study: Kaggle)
 - [ ] 09 · DETR family
 - [ ] 10 · Self-supervised learning & CLIP
 - [ ] 11 · Embeddings & retrieval

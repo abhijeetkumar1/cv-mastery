@@ -20,6 +20,8 @@ dependencies = [
     "jupyterlab",
     "ipykernel",
     "ipywidgets",
+    "transformers>=5.22.1",
+    "scipy>=1.18.1",
 ]
 
 [tool.uv]

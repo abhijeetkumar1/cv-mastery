@@ -12,4 +12,5 @@ Modules are added as the course progresses:
     metrics  - precision/recall/F1, AP, multi-label metrics  (05b, 05c)
     tracking - a minimal experiment log                      (05b)
     detection - boxes, IoU, NMS, COCO-style mAP, mask AP      (06, 07)
+    transformer - attention, multi-head attention, ViT        (08)
 """
